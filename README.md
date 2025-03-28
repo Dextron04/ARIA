@@ -1,5 +1,8 @@
 # SUMI-Ears: Voice-to-Text Module (Phase 1)
 
+![ChatGPT Image Mar 28, 2025, 01_21_32 AM](https://github.com/user-attachments/assets/b048d12f-506e-416a-bd91-6d7d863997a7)
+
+
 **SUMI-Ears** is the first building block of the SUMI voice assistant — designed to listen to live audio and transcribe it in real-time using OpenAI's Whisper model.
 
 ---
