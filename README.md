@@ -18,7 +18,7 @@
 ### Setup:
 
 ```bash
-git clone https://github.com/Dextron04/sumi-ears.git
+git clone https://github.com/Dextron04/SUMI.git
 cd sumi-ears
 python3 -m venv venv
 source venv/bin/activate
