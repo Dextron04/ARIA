@@ -1,4 +1,3 @@
-whisper
-pyaudio
+vosk
+sounddevice
 numpy
-openai-whisper
