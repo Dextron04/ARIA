@@ -1,3 +1,6 @@
 vosk
 sounddevice
 numpy
+TTS>=0.22.0
+pyttsx3>=2.90
+python-dotenv>=1.0.0

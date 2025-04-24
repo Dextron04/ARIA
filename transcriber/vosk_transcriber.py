@@ -2,6 +2,7 @@ import sounddevice as sd
 import queue
 import vosk
 import json
+from brain.processor import query_brain
 
 # Load Vosk model (ensure it's downloaded)
 MODEL_PATH = "models/vosk-model-en-us-0.42-gigaspeech"
@@ -27,3 +28,9 @@ def start_transcription():
             if rec.AcceptWaveform(data):
                 result = json.loads(rec.Result())
                 print("Live transcription:", result["text"])
+                user_input = result["text"]
+
+                if user_input:
+                    print(f"User input: {user_input}")
+                    response = query_brain(user_input)
+                    print(f"Brain response: {response}")
