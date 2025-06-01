@@ -1,8 +1,8 @@
-# SUMI-Ears: Voice-to-Text Module (Phase 1)
+# ARIA-Ears: Voice-to-Text Module (Phase 1)
+![ChatGPT Image Jun 1, 2025, 12_10_49 AM](https://github.com/user-attachments/assets/8dfa05f4-b691-4cc4-9cbd-14ad49529c6d)
 
-![ChatGPT Image Mar 28, 2025, 01_21_32 AM](https://github.com/user-attachments/assets/b048d12f-506e-416a-bd91-6d7d863997a7)
 
-**SUMI-Ears** is the first building block of the SUMI voice assistant — designed to listen to live audio and transcribe it in real-time.
+**ARIA-Ears** is the first building block of the SUMI voice assistant — designed to listen to live audio and transcribe it in real-time.
 
 ---
 
