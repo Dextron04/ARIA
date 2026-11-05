@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Diamond ring made of letters -- animated ASCII art (own implementation).
 
-Timeline (16 s loop):
-   0.0- 1.5  the diamond glimmers into existence
-   1.5- 4.5  the band grows up from the bottom in a stream of sparks
-   4.5- 5.5  the setting appears
-   5.5-14.0  the ring turns a full revolution, glints + orbiting sparkle trails
-  15.0-16.0  everything fades to black, loop
+Timeline (20 s loop):
+   0.3- 3.3  the band grows up from the bottom in a stream of sparks
+   3.3- 4.3  the setting appears
+   4.0- 6.0  the diamond glimmers into place
+   6.5-14.5  the ring turns a full revolution, glints + orbiting sparkle trails
+  14.8-17.8  "I love u Maryam -TK" is written letter by letter
+  19.0-20.0  everything fades to black, loop
 
 Usage:
     python diamond_ring.py --gif ring.gif     # export animated GIF
@@ -22,7 +23,7 @@ import time
 COLS, ROWS = 108, 64          # character grid
 CELL_W, CELL_H = 6, 9         # pixels per character in the GIF
 FLOOR = 54                    # row where the ring touches the "floor"
-DURATION = 16.0
+DURATION = 20.0
 FPS = 20
 
 # letters/digits ordered roughly by ink density
@@ -177,11 +178,11 @@ def proj_static(p):
 
 def render(t):
     cv = Canvas()
-    fade = 1.0 - smooth(15.0, 16.0, t)
-    gem_in = smooth(0.0, 1.5, t)
-    ring_p = smooth(1.5, 4.5, t)
-    set_in = smooth(4.3, 5.5, t)
-    spin = smooth(5.5, 14.0, t)
+    fade = 1.0 - smooth(19.0, 20.0, t)
+    gem_in = smooth(4.0, 6.0, t)
+    ring_p = smooth(0.3, 3.3, t)
+    set_in = smooth(3.3, 4.3, t)
+    spin = smooth(6.5, 14.5, t)
     ay = spin * 2*math.pi
     ax = -0.16 + 0.03*math.sin(t*1.3)
     scale = ROWS*0.25
@@ -300,7 +301,7 @@ def render(t):
                     cv.glints += 1
 
     # --- orbiting sparkle trails ---
-    orb = smooth(6.5, 8.5, t) * (1 - smooth(14.2, 15.0, t))
+    orb = smooth(8.0, 10.0, t) * (1 - smooth(14.5, 15.5, t))
     if orb > 0:
         for o, (tilt, spd) in enumerate(((0.62, 1.0), (-0.62, -0.8))):
             prec = t*0.35*(1 if o == 0 else -1)
@@ -322,9 +323,9 @@ def render(t):
                         cv.glints += 1
 
     # --- reflection on the floor ---
-    for y in range(FLOOR+1, FLOOR+9):
+    for y in range(FLOOR+1, FLOOR+5):
         src = 2*FLOOR - y + 1
-        fade_r = 0.22 * (1 - (y - FLOOR)/9.0)
+        fade_r = 0.22 * (1 - (y - FLOOR)/5.0)
         for x in range(COLS):
             if cv.ch[y][x] == " " and 0 <= src < ROWS and cv.ch[src][x] != " ":
                 cv.ch[y][x] = cv.ch[src][x]
@@ -344,6 +345,22 @@ def render(t):
                 if cv.ch[y][x] != " " and hrand(x, y, 9) > fade:
                     cv.ch[y][x] = " "
                 cv.b[y][x] *= fade
+
+    # --- love note, written letter by letter once the ring is finished ---
+    write = smooth(14.8, 17.8, t)
+    lines = (("I  l o v e  u  M a r y a m", 59), ("- T K", 61))
+    slots = [(x0 + i, row, c) for text, row in lines
+             for x0 in [COLS//2 - len(text)//2] for i, c in enumerate(text) if c != " "]
+    n_shown = int(write * len(slots) + 0.999) if write > 0 else 0
+    for k, (x, row, c) in enumerate(slots[:n_shown]):
+        newest = (k == n_shown - 1 and write < 1.0)
+        if newest:                                   # fresh letter flashes as a little star
+            cv.glints += 1
+            for dx, dy, g in ((-1, 0, "-"), (1, 0, "-"), (0, -1, "|"), (0, 1, "|")):
+                if cv.ch[row+dy][x+dx] == " ":
+                    cv.ch[row+dy][x+dx], cv.b[row+dy][x+dx] = g, 0.6
+        cv.ch[row][x] = "*" if newest else c
+        cv.b[row][x] = 1.0 if newest else (0.95 if n_shown - k < 4 else 0.85)
 
     # --- HUD ---
     letters = sum(1 for row in cv.ch for c in row if c != " ")
