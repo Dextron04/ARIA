@@ -6,9 +6,9 @@ Timeline (26 s loop):
    3.3- 4.3  the setting appears
    4.0- 6.0  the diamond glimmers into place
    6.5-14.5  the ring turns a full revolution, glints + orbiting sparkle trails
-  14.8-17.3  "Will u marry me? - TK" is written under the ring, letter by letter
+  14.8-17.3  "Will u marry me? - Tushin" is written under the ring, letter by letter
   18.3-19.3  the ring dissolves away
-  19.4-26.0  big block-letter "WILL U MARRY ME? / MARYAM", a pulsing heart and - TK
+  19.4-26.0  big block-letter "WILL U MARRY ME? / MARYAM", a pulsing heart and - Tushin
   25.0-26.0  fade to black, loop
 
 Usage:
@@ -334,7 +334,7 @@ def render(t):
 
     # --- love note under the ring, written letter by letter ---
     write = smooth(14.8, 17.3, t)
-    lines = (("W i l l  u  m a r r y  m e ?", 59), ("- T K", 61))
+    lines = (("W i l l  u  m a r r y  m e ?", 59), ("- T u s h i n", 61))
     slots = [(x0 + i, row, c) for text, row in lines
              for x0 in [COLS//2 - len(text)//2] for i, c in enumerate(text) if c != " "]
     n_shown = int(write * len(slots) + 0.999) if write > 0 else 0
@@ -461,8 +461,8 @@ def draw_proposal(cv, t):
                     cv.b[y][x] = min(1.0, shade)
 
     # signature, written letter by letter
-    sig = smooth(3.4, 4.4, k)
-    text = "- T K"
+    sig = smooth(3.4, 4.8, k)
+    text = "- T u s h i n"
     x0 = COLS//2 - len(text)//2
     n_shown = int(sig*len(text) + 0.999) if sig > 0 else 0
     for i, c in enumerate(text[:n_shown]):
