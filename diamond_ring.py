@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Diamond ring made of letters -- animated ASCII art (own implementation).
 
-Timeline (20 s loop):
+Timeline (26 s loop):
    0.3- 3.3  the band grows up from the bottom in a stream of sparks
    3.3- 4.3  the setting appears
    4.0- 6.0  the diamond glimmers into place
    6.5-14.5  the ring turns a full revolution, glints + orbiting sparkle trails
-  14.8-17.8  "I love u Maryam -TK" is written letter by letter
-  19.0-20.0  everything fades to black, loop
+  14.8-17.3  "Will u marry me? - TK" is written under the ring, letter by letter
+  18.3-19.3  the ring dissolves away
+  19.4-26.0  big block-letter "WILL U MARRY ME? / MARYAM", a pulsing heart and - TK
+  25.0-26.0  fade to black, loop
 
 Usage:
     python diamond_ring.py --gif ring.gif     # export animated GIF
@@ -23,7 +25,7 @@ import time
 COLS, ROWS = 108, 64          # character grid
 CELL_W, CELL_H = 6, 9         # pixels per character in the GIF
 FLOOR = 54                    # row where the ring touches the "floor"
-DURATION = 20.0
+DURATION = 26.0
 FPS = 20
 
 # letters/digits ordered roughly by ink density
@@ -178,7 +180,6 @@ def proj_static(p):
 
 def render(t):
     cv = Canvas()
-    fade = 1.0 - smooth(19.0, 20.0, t)
     gem_in = smooth(4.0, 6.0, t)
     ring_p = smooth(0.3, 3.3, t)
     set_in = smooth(3.3, 4.3, t)
@@ -331,24 +332,9 @@ def render(t):
                 cv.ch[y][x] = cv.ch[src][x]
                 cv.b[y][x] = cv.b[src][x]*fade_r
 
-    # --- dust ---
-    for (x, y, ph, br) in DUST:
-        tw = 0.5 + 0.5*math.sin(t*2.2 + ph)
-        if cv.ch[y][x] == " " and tw > 0.45:
-            cv.ch[y][x] = ".'`,:"[int(br*5) % 5] if tw < 0.9 else "+"
-            cv.b[y][x] = 0.12 + 0.25*tw*br
-
-    # --- fade whole frame ---
-    if fade < 1.0:
-        for y in range(ROWS):
-            for x in range(COLS):
-                if cv.ch[y][x] != " " and hrand(x, y, 9) > fade:
-                    cv.ch[y][x] = " "
-                cv.b[y][x] *= fade
-
-    # --- love note, written letter by letter once the ring is finished ---
-    write = smooth(14.8, 17.8, t)
-    lines = (("I  l o v e  u  M a r y a m", 59), ("- T K", 61))
+    # --- love note under the ring, written letter by letter ---
+    write = smooth(14.8, 17.3, t)
+    lines = (("W i l l  u  m a r r y  m e ?", 59), ("- T K", 61))
     slots = [(x0 + i, row, c) for text, row in lines
              for x0 in [COLS//2 - len(text)//2] for i, c in enumerate(text) if c != " "]
     n_shown = int(write * len(slots) + 0.999) if write > 0 else 0
@@ -362,13 +348,128 @@ def render(t):
         cv.ch[row][x] = "*" if newest else c
         cv.b[row][x] = 1.0 if newest else (0.95 if n_shown - k < 4 else 0.85)
 
-    # --- HUD ---
-    letters = sum(1 for row in cv.ch for c in row if c != " ")
-    cv.text(COLS-9, 1, f"t {t:05.2f}s", 0.45)
-    cv.text(4, ROWS-5, "ARIA - ascii diamond ring", 0.33)
-    cv.text(4, ROWS-4, f"rotation {math.degrees(ay) % 360:06.2f}   glints {cv.glints:4d}", 0.33)
-    cv.text(4, ROWS-3, f"letters {letters:,}", 0.33)
+    # --- the ring (and note) dissolve away ---
+    dissolve(cv, 1.0 - smooth(18.3, 19.3, t), 9)
+
+    # --- HUD (only while the ring is around) ---
+    if t < 19.3:
+        letters = sum(1 for row in cv.ch for c in row if c != " ")
+        cv.text(COLS-9, 1, f"t {t:05.2f}s", 0.45)
+        cv.text(4, ROWS-5, "ARIA - ascii diamond ring", 0.33)
+        cv.text(4, ROWS-4, f"rotation {math.degrees(ay) % 360:06.2f}   glints {cv.glints:4d}", 0.33)
+        cv.text(4, ROWS-3, f"letters {letters:,}", 0.33)
+
+    # --- the proposal in big letters, after the ring is gone ---
+    if t > 19.4:
+        draw_proposal(cv, t)
+
+    # --- dust (twinkling stars, always there) ---
+    for (x, y, ph, br) in DUST:
+        tw = 0.5 + 0.5*math.sin(t*2.2 + ph)
+        if cv.ch[y][x] == " " and tw > 0.45:
+            cv.ch[y][x] = ".'`,:"[int(br*5) % 5] if tw < 0.9 else "+"
+            cv.b[y][x] = 0.12 + 0.25*tw*br
+
+    dissolve(cv, 1.0 - smooth(25.0, 26.0, t), 11)     # final fade, then loop
     return cv
+
+
+def dissolve(cv, fade, seed):
+    if fade >= 1.0:
+        return
+    for y in range(ROWS):
+        for x in range(COLS):
+            if cv.ch[y][x] != " " and hrand(x, y, seed) > fade:
+                cv.ch[y][x] = " "
+            cv.b[y][x] *= fade
+
+
+# 5x7 block font for the proposal
+FONT = {
+    "W": ["X...X", "X...X", "X...X", "X.X.X", "X.X.X", "XX.XX", "X...X"],
+    "I": ["XXXXX", "..X..", "..X..", "..X..", "..X..", "..X..", "XXXXX"],
+    "L": ["X....", "X....", "X....", "X....", "X....", "X....", "XXXXX"],
+    "U": ["X...X", "X...X", "X...X", "X...X", "X...X", "X...X", ".XXX."],
+    "M": ["X...X", "XX.XX", "X.X.X", "X.X.X", "X...X", "X...X", "X...X"],
+    "A": [".XXX.", "X...X", "X...X", "XXXXX", "X...X", "X...X", "X...X"],
+    "R": ["XXXX.", "X...X", "X...X", "XXXX.", "X.X..", "X..X.", "X...X"],
+    "Y": ["X...X", "X...X", ".X.X.", "..X..", "..X..", "..X..", "..X.."],
+    "E": ["XXXXX", "X....", "X....", "XXXX.", "X....", "X....", "XXXXX"],
+    "?": [".XXX.", "X...X", "....X", "...X.", "..X..", ".....", "..X.."],
+    " ": ["....."]*7,
+}
+
+
+def big_text(word, x0, y0, sx, t, reveal, seed):
+    """Return list of (x, y, char, brightness) for `word` in the block font.
+    Each lit pixel is filled with the word's own letters; a soft shadow is added."""
+    cells = []
+    gw = 5*sx + sx                                 # glyph advance
+    total = len(word)*gw - sx
+    x0 = COLS//2 - total//2 if x0 is None else x0
+    for gi, ch in enumerate(word):
+        for ry, row in enumerate(FONT[ch]):
+            for rx, px in enumerate(row):
+                if px != "X":
+                    continue
+                for ox in range(sx):
+                    x, y = x0 + gi*gw + rx*sx + ox, y0 + ry
+                    r = hrand(x, y, seed)
+                    if r > reveal:
+                        continue
+                    new = reveal < 1.0 and r > reveal - 0.06       # just appeared -> flash
+                    wave = 0.5 + 0.5*math.sin(x*0.22 - t*4.0 + y*0.3)
+                    bright = 0.62 + 0.38*wave
+                    body = "@" if bright > 0.8 else ("%" if bright > 0.7 else "#")   # solid, so the shape reads
+                    cells.append((x, y, "*" if new else body, 1.0 if new else bright, False))
+                    cells.append((x+1, y+1, ":", 0.2, True))                           # shadow
+    return cells
+
+
+def draw_proposal(cv, t):
+    k = t - 19.4
+    lines = (("WILL U MARRY ME?", None, 9, 1, 0.0, 1), ("MARYAM", None, 21, 2, 1.2, 2))
+    shadows = []
+    for word, x0, y0, sx, delay, seed in lines:
+        reveal = smooth(delay, delay + 2.2, k)
+        if reveal <= 0:
+            continue
+        for x, y, c, b, sh in big_text(word, x0, y0, sx, t, reveal, seed):
+            if not (0 <= x < COLS and 0 <= y < ROWS):
+                continue
+            if sh:
+                if cv.ch[y][x] == " ":
+                    shadows.append((x, y, c, b))
+            else:
+                cv.ch[y][x], cv.b[y][x] = c, b
+    for x, y, c, b in shadows:
+        if cv.ch[y][x] == " ":
+            cv.ch[y][x], cv.b[y][x] = c, b
+
+    # pulsing heart, filled with letters
+    heart = smooth(2.6, 3.6, k)
+    if heart > 0:
+        pulse = 1.0 + 0.07*max(0.0, math.sin(t*6.0))
+        sy, cy = 5.2*pulse, 41
+        sx = sy*1.6
+        for y in range(cy-8, cy+8):
+            for x in range(COLS//2-22, COLS//2+23):
+                u, v = (x - COLS/2)/sx, -(y - cy)/sy
+                if (u*u + v*v - 1)**3 - u*u*v**3 < 0 and hrand(x, y, 4) < heart:
+                    shade = 0.55 + 0.45*max(0.0, v/1.3) + 0.15*math.sin(t*5 + x*0.3)
+                    cv.ch[y][x] = "ILOVEYOU"[(x + 3*y) % 8]
+                    cv.b[y][x] = min(1.0, shade)
+
+    # signature, written letter by letter
+    sig = smooth(3.4, 4.4, k)
+    text = "- T K"
+    x0 = COLS//2 - len(text)//2
+    n_shown = int(sig*len(text) + 0.999) if sig > 0 else 0
+    for i, c in enumerate(text[:n_shown]):
+        if c != " ":
+            cv.ch[52][x0+i], cv.b[52][x0+i] = c, 1.0
+    if sig > 0.9 and math.sin(t*5) > 0.6:               # tiny sparkle by the signature
+        cv.ch[52][x0+len(text)+1], cv.b[52][x0+len(text)+1] = "*", 1.0
 
 
 # ---------- output ----------
