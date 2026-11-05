@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Rotating diamond ring rendered as ASCII art.
+"""Diamond ring made of letters -- animated ASCII art (own implementation).
+
+Timeline (16 s loop):
+   0.0- 1.5  the diamond glimmers into existence
+   1.5- 4.5  the band grows up from the bottom in a stream of sparks
+   4.5- 5.5  the setting appears
+   5.5-14.0  the ring turns a full revolution, glints + orbiting sparkle trails
+  15.0-16.0  everything fades to black, loop
 
 Usage:
-    python diamond_ring.py                 # animate in the terminal (Ctrl+C to quit)
-    python diamond_ring.py --gif ring.gif  # export an animated GIF
-    python diamond_ring.py --frame         # print a single frame
-Options: --width N --height N --frames N --no-color
-
-A tiny software 3D renderer: a faceted brilliant-cut gem on a gold torus band,
-z-buffered, flat-shaded gem facets (so they flash as it turns) and a smooth
-shaded band, then mapped to characters.
+    python diamond_ring.py --gif ring.gif     # export animated GIF
+    python diamond_ring.py                    # play in a (256-colour) terminal
+    python diamond_ring.py --frame 9.0        # print one frame at t=9.0s
 """
 import argparse
 import math
@@ -17,11 +19,27 @@ import random
 import sys
 import time
 
-BAND_RAMP = " .,-~:;=!*#$@"
-GEM_RAMP = " .:+*oO#@"
+COLS, ROWS = 108, 64          # character grid
+CELL_W, CELL_H = 6, 9         # pixels per character in the GIF
+FLOOR = 54                    # row where the ring touches the "floor"
+DURATION = 16.0
+FPS = 20
+
+# letters/digits ordered roughly by ink density
+RAMP = " .,:;ilI1tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
 
 
-# ---------- tiny vector helpers ----------
+def smooth(a, b, t):
+    t = max(0.0, min(1.0, (t - a) / (b - a)))
+    return t * t * (3 - 2 * t)
+
+
+def hrand(x, y, s=0):
+    """Deterministic per-cell random in [0,1)."""
+    return (((x * 73856093) ^ (y * 19349663) ^ (s * 83492791)) & 0xFFFF) / 65536.0
+
+
+# ---------- vectors ----------
 def sub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
 def cross(a, b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
 def dot(a, b): return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
@@ -30,9 +48,11 @@ def norm(a):
     return (a[0]/l, a[1]/l, a[2]/l)
 
 
-def rot(p, ay, ax):
-    """Rotate point about Y by ay, then about X by ax."""
+def rot(p, ay, ax=0.0, az=0.0):
     x, y, z = p
+    if az:
+        c, s = math.cos(az), math.sin(az)
+        x, y = x*c - y*s, x*s + y*c
     c, s = math.cos(ay), math.sin(ay)
     x, z = x*c + z*s, -x*s + z*c
     c, s = math.cos(ax), math.sin(ax)
@@ -41,70 +61,94 @@ def rot(p, ay, ax):
 
 
 # ---------- geometry ----------
-def build_band(R=1.0, r=0.17, nu=44, nv=14):
-    """Torus whose hole axis is Z (ring stands upright, gem on +Y)."""
+def build_band(R=1.0, rr=0.17, rz=0.26, nu=60, nv=12):
+    """Torus; axis = Z, so the ring stands upright. u=90deg is the top."""
     verts, normals = [], []
     for i in range(nu):
         u = 2*math.pi*i/nu
         for j in range(nv):
             v = 2*math.pi*j/nv
-            cx, cy = R*math.cos(u), R*math.sin(u)
             nx, ny, nz = math.cos(v)*math.cos(u), math.cos(v)*math.sin(u), math.sin(v)
-            verts.append((cx + r*nx, cy + r*ny, r*nz*1.3))
-            normals.append((nx, ny, nz))
+            verts.append(((R + rr*math.cos(v))*math.cos(u), (R + rr*math.cos(v))*math.sin(u), rz*nz))
+            normals.append(norm((nx, ny, nz/1.6)))
     tris = []
     for i in range(nu):
+        i2 = (i+1) % nu
+        # angular distance from the bottom (u = -90deg) for the grow-in effect
+        u_mid = 2*math.pi*(i+0.5)/nu
+        d = abs(((u_mid + math.pi/2 + math.pi) % (2*math.pi)) - math.pi)
         for j in range(nv):
-            a = i*nv + j
-            b = ((i+1) % nu)*nv + j
-            c = ((i+1) % nu)*nv + (j+1) % nv
-            d = i*nv + (j+1) % nv
-            tris += [(a, b, c), (a, c, d)]
+            j2 = (j+1) % nv
+            a, b, c, e = i*nv+j, i2*nv+j, i2*nv+j2, i*nv+j2
+            tris += [(a, b, c, d), (a, c, e, d)]
     return verts, normals, tris
 
 
-def build_gem(cy=1.38, girdle=0.68, table=0.40, crown_h=0.27, pav_h=0.58, n=8):
-    """Brilliant-cut: table (top), crown, girdle, pavilion down to a point."""
-    rings = lambda rad, y, off=0.0: [
-        (rad*math.cos(2*math.pi*(k+off)/n), y, rad*math.sin(2*math.pi*(k+off)/n))
-        for k in range(n)]
-    tbl = rings(table, cy + crown_h)
-    gir = rings(girdle, cy, 0.5)
-    apex = (0.0, cy - pav_h, 0.0)
-    top = (0.0, cy + crown_h, 0.0)
-    faces = []  # (triangle verts, is_table)
+def build_setting(y0=1.08, y1=1.40, r0=0.20, r1=0.46, n=12):
+    verts, normals = [], []
+    for k in range(n):
+        a = 2*math.pi*k/n
+        verts += [(r0*math.cos(a), y0, r0*math.sin(a)), (r1*math.cos(a), y1, r1*math.sin(a))]
+        normals += [norm((math.cos(a), 0.5, math.sin(a)))]*2
+    tris = []
     for k in range(n):
         k2 = (k+1) % n
-        faces.append(((top, tbl[k2], tbl[k]), True))             # table
-        faces.append(((tbl[k], tbl[k2], gir[k]), False))         # crown
-        faces.append(((gir[k], tbl[k2], gir[k2]), False))        # star
-        faces.append(((gir[k], gir[k2], apex), False))           # pavilion
+        a, b, c, d = 2*k, 2*k+1, 2*k2, 2*k2+1
+        tris += [(a, b, c, 0), (b, d, c, 0)]
+    return verts, normals, tris
+
+
+def build_gem(cy=1.40, girdle=0.62, table=0.36, crown_h=0.34, pav_h=0.34, n=8):
+    ring = lambda rad, y, off=0.0: [
+        (rad*math.cos(2*math.pi*(k+off)/n), y, rad*math.sin(2*math.pi*(k+off)/n)) for k in range(n)]
+    tbl, gir = ring(table, cy+crown_h), ring(girdle, cy, 0.5)
+    apex, top = (0.0, cy-pav_h, 0.0), (0.0, cy+crown_h, 0.0)
+    faces = []
+    for k in range(n):
+        k2 = (k+1) % n
+        faces += [(top, tbl[k2], tbl[k]), (tbl[k], tbl[k2], gir[k]),
+                  (gir[k], tbl[k2], gir[k2]), (gir[k], gir[k2], apex)]
     return faces
 
 
-# ---------- rasterizer ----------
+BAND, SETTING, GEM = build_band(), build_setting(), build_gem()
+_r = random.Random(11)
+DUST = [(_r.randrange(COLS), _r.randrange(ROWS), _r.random()*6.28, _r.random()) for _ in range(150)]
+
+LIGHT = norm((-0.45, 0.65, 0.75))
+HALF = norm((LIGHT[0], LIGHT[1], LIGHT[2]+1))
+
+
+# ---------- canvas ----------
 class Canvas:
-    def __init__(self, w, h):
-        self.w, self.h = w, h
-        self.clear()
+    def __init__(self):
+        self.z = [[-1e9]*COLS for _ in range(ROWS)]
+        self.ch = [[" "]*COLS for _ in range(ROWS)]
+        self.b = [[0.0]*COLS for _ in range(ROWS)]
+        self.glints = 0
 
-    def clear(self):
-        self.z = [[-1e9]*self.w for _ in range(self.h)]
-        self.ch = [[" "]*self.w for _ in range(self.h)]
-        self.col = [[0]*self.w for _ in range(self.h)]  # 0 none,1 gold,2 gem,3 sparkle,4 star
+    def put(self, x, y, z, b, ch, force=False):
+        if 0 <= x < COLS and 0 <= y < ROWS and (force or z > self.z[y][x]):
+            self.z[y][x] = z
+            self.ch[y][x] = ch
+            self.b[y][x] = max(0.0, min(1.0, b))
 
-    def tri(self, p0, p1, p2, shade, ramp, color):
-        """p = (sx, sy, z). shade(l0,l1,l2)->brightness 0..1 by barycentric weights."""
-        minx = max(0, int(min(p0[0], p1[0], p2[0])))
-        maxx = min(self.w-1, int(max(p0[0], p1[0], p2[0])) + 1)
-        miny = max(0, int(min(p0[1], p1[1], p2[1])))
-        maxy = min(self.h-1, int(max(p0[1], p1[1], p2[1])) + 1)
+    def letter(self, x, y, b):
+        b = max(0.0, min(1.0, b))
+        f = b*(len(RAMP)-1) + (hrand(x, y, 5) - 0.5)*2.2   # jitter -> "letter texture"
+        return RAMP[max(1, min(len(RAMP)-1, int(f)))]
+
+    def tri(self, p0, p1, p2, shade, reveal=1.0):
+        minx, maxx = max(0, int(min(p0[0], p1[0], p2[0]))), min(COLS-1, int(max(p0[0], p1[0], p2[0]))+1)
+        miny, maxy = max(0, int(min(p0[1], p1[1], p2[1]))), min(ROWS-1, int(max(p0[1], p1[1], p2[1]))+1)
         den = (p1[1]-p2[1])*(p0[0]-p2[0]) + (p2[0]-p1[0])*(p0[1]-p2[1])
         if abs(den) < 1e-9:
             return
         for y in range(miny, maxy+1):
             for x in range(minx, maxx+1):
-                px, py = x + 0.5, y + 0.5
+                if reveal < 1.0 and hrand(x, y, 3) > reveal:
+                    continue
+                px, py = x+0.5, y+0.5
                 l0 = ((p1[1]-p2[1])*(px-p2[0]) + (p2[0]-p1[0])*(py-p2[1])) / den
                 l1 = ((p2[1]-p0[1])*(px-p2[0]) + (p0[0]-p2[0])*(py-p2[1])) / den
                 l2 = 1 - l0 - l1
@@ -112,50 +156,97 @@ class Canvas:
                     continue
                 z = l0*p0[2] + l1*p1[2] + l2*p2[2]
                 if z > self.z[y][x]:
-                    b = max(0.0, min(1.0, shade(l0, l1, l2)))
+                    b = shade(l0, l1, l2)
                     self.z[y][x] = z
-                    self.ch[y][x] = ramp[int(b*(len(ramp)-1))]
-                    self.col[y][x] = color(b) if callable(color) else color
+                    self.b[y][x] = max(0.0, min(1.0, b))
+                    self.ch[y][x] = self.letter(x, y, b)
+
+    def text(self, x, y, s, b=0.4):
+        for i, c in enumerate(s):
+            if 0 <= x+i < COLS and 0 <= y < ROWS and c != " ":
+                self.ch[y][x+i], self.b[y][x+i] = c, b
 
 
-LIGHT = norm((-0.5, 0.7, 0.8))
-VIEW = (0.0, 0.0, 1.0)
+# ---------- scene ----------
+def proj_static(p):
+    """Orbit points use a slow independent camera (not the ring's spin)."""
+    scale = ROWS*0.25
+    x, y, z = rot(p, 0.0, -0.16)
+    return (COLS/2 + x*scale*1.5, FLOOR - (y + 1.12)*scale, z), (x, y, z)
 
 
-def render(t, w, h, stars):
-    cv = Canvas(w, h)
-    ay = t * 2*math.pi          # spin
-    ax = -0.35 + 0.08*math.sin(t*2*math.pi)   # gentle tilt/bob
-    scale = h * 0.27
-    aspect = 2.0                # chars are ~2x taller than wide
-    cx, cy = w/2, h/2 + 0.15*scale
+def render(t):
+    cv = Canvas()
+    fade = 1.0 - smooth(15.0, 16.0, t)
+    gem_in = smooth(0.0, 1.5, t)
+    ring_p = smooth(1.5, 4.5, t)
+    set_in = smooth(4.3, 5.5, t)
+    spin = smooth(5.5, 14.0, t)
+    ay = spin * 2*math.pi
+    ax = -0.16 + 0.03*math.sin(t*1.3)
+    scale = ROWS*0.25
+    xs = scale*1.5                     # characters are taller than wide
 
-    def project(p):
+    def proj(p):
         x, y, z = rot(p, ay, ax)
-        return (cx + x*scale*aspect, cy - y*scale, z), (x, y, z)
+        return (COLS/2 + x*xs, FLOOR - (y + 1.12)*scale, z), (x, y, z)
 
-    # band
-    bv, bn, bt = BAND_CACHE
-    proj = [project(v) for v in bv]
-    nrm = [rot(n, ay, ax) for n in bn]
-    for a, b, c in bt:
-        pa, pb, pc = proj[a][0], proj[b][0], proj[c][0]
+    # --- band (grows up from the bottom) ---
+    front = math.pi * ring_p * 1.02
+    bv, bn, bt = BAND
+    P = [proj(v)[0] for v in bv]
+    N = [rot(n, ay, ax) for n in bn]
+    for a, b, c, d in bt:
+        if d > front:
+            continue
+        pa, pb, pc = P[a], P[b], P[c]
         if (pb[0]-pa[0])*(pc[1]-pa[1]) - (pb[1]-pa[1])*(pc[0]-pa[0]) > 0:
-            continue  # back-face (screen y is down)
-        na, nb, nc = nrm[a], nrm[b], nrm[c]
+            continue
+        na, nb, nc = N[a], N[b], N[c]
+        edge = max(0.0, 1 - (front - d)/0.35) if front < math.pi*1.01 else 0.0
 
-        def shade(l0, l1, l2, na=na, nb=nb, nc=nc):
-            n = norm((l0*na[0]+l1*nb[0]+l2*nc[0], l0*na[1]+l1*nb[1]+l2*nc[1],
-                      l0*na[2]+l1*nb[2]+l2*nc[2]))
+        def shade(l0, l1, l2, na=na, nb=nb, nc=nc, edge=edge):
+            n = norm((l0*na[0]+l1*nb[0]+l2*nc[0], l0*na[1]+l1*nb[1]+l2*nc[1], l0*na[2]+l1*nb[2]+l2*nc[2]))
             diff = max(0.0, dot(n, LIGHT))
-            hv = norm((LIGHT[0], LIGHT[1], LIGHT[2]+1))
-            spec = max(0.0, dot(n, hv)) ** 24
-            return 0.12 + 0.6*diff + 0.5*spec
-        cv.tri(pa, pb, pc, shade, BAND_RAMP, 1)
+            spec = max(0.0, dot(n, HALF)) ** 30
+            rx, ry = 2*n[2]*n[0], 2*n[2]*n[1]
+            env = 0.5 + 0.5*math.sin(5*ry + 1.5*rx + 1.0)
+            rim = (1 - abs(n[2])) ** 2
+            return (0.12 + 0.30*diff + 0.32*env + 0.55*spec + 0.35*rim) + edge*0.5
+        cv.tri(pa, pb, pc, shade)
 
-    # gem
-    for k, (tri3, is_table) in enumerate(GEM_FACES):
-        pts = [project(p) for p in tri3]
+    # sparks flying off the growing front
+    if 0.02 < ring_p < 0.995:
+        for s in range(46):
+            side = 1 if s % 2 else -1
+            u = -math.pi/2 + side*front*(0.97 + 0.06*hrand(s, 1, 2))
+            rr = 1 + (hrand(s, 2, int(t*10)) - 0.5)*0.55
+            wp = (rr*math.cos(u), rr*math.sin(u), (hrand(s, 3, int(t*10)) - 0.5)*0.4)
+            (sx, sy, sz), _ = proj(wp)
+            cv.put(int(sx), int(sy), sz + 1, 0.55 + 0.45*hrand(s, 4, int(t*20)), "*+.'`"[s % 5])
+            cv.glints += 1
+
+    # --- setting (basket) ---
+    if set_in > 0:
+        sv, sn, st = SETTING
+        SP = [proj(v)[0] for v in sv]
+        SN = [rot(n, ay, ax) for n in sn]
+        for a, b, c, _ in st:
+            pa, pb, pc = SP[a], SP[b], SP[c]
+            if (pb[0]-pa[0])*(pc[1]-pa[1]) - (pb[1]-pa[1])*(pc[0]-pa[0]) > 0:
+                continue
+            na, nb, nc = SN[a], SN[b], SN[c]
+
+            def shade(l0, l1, l2, na=na, nb=nb, nc=nc):
+                n = norm((l0*na[0]+l1*nb[0]+l2*nc[0], l0*na[1]+l1*nb[1]+l2*nc[1], l0*na[2]+l1*nb[2]+l2*nc[2]))
+                spec = max(0.0, dot(n, HALF)) ** 20
+                return 0.22 + 0.35*max(0.0, dot(n, LIGHT)) + 0.6*spec + 0.2*(1 - abs(n[2]))
+            cv.tri(pa, pb, pc, shade, reveal=set_in)
+
+    # --- gem ---
+    bursts = []
+    for k, tri3 in enumerate(GEM):
+        pts = [proj(p) for p in tri3]
         s = [q[0] for q in pts]
         w3 = [q[1] for q in pts]
         n = norm(cross(sub(w3[1], w3[0]), sub(w3[2], w3[0])))
@@ -164,111 +255,167 @@ def render(t, w, h, stars):
         if (s[1][0]-s[0][0])*(s[2][1]-s[0][1]) - (s[1][1]-s[0][1])*(s[2][0]-s[0][0]) > 0:
             s[1], s[2] = s[2], s[1]
         diff = max(0.0, dot(n, LIGHT))
-        hv = norm((LIGHT[0], LIGHT[1], LIGHT[2]+1))
-        spec = max(0.0, dot(n, hv)) ** 14
-        # per-facet "fire": facets flash as they sweep past the light
-        fire = 0.5 + 0.5*math.sin(t*2*math.pi*3 + k*1.7)
-        b = 0.25 + 0.35*diff + 0.9*spec + (0.15 + 0.2*spec)*fire
-        if is_table:
-            b += 0.15
-        sparkle = b > 0.95
-        col = 3 if sparkle else 2
-        cv.tri(s[0], s[1], s[2], lambda *_ , b=b: b, GEM_RAMP, col)
+        spec = max(0.0, dot(n, HALF)) ** 12
+        fire = 0.5 + 0.5*math.sin(t*7 + k*1.9 + ay*2)
+        facet = ((k * 37) % 7) / 7.0            # each facet has its own tone
+        b = 0.18 + 0.38*facet + 0.25*diff + 0.50*spec + 0.35*fire
+        if k % 4 == 0:
+            b += 0.12
+        cv.tri(s[0], s[1], s[2], lambda *_, b=b: b, reveal=gem_in)
+        if b > 1.0 and gem_in > 0.9:
+            cx = sum(q[0] for q in s)/3
+            cy = sum(q[1] for q in s)/3
+            bursts.append((b, cx, cy, max(q[2] for q in s)))
 
-    # twinkling stars around the ring
-    for (sx, sy, ph) in stars:
-        tw = math.sin(t*2*math.pi*2 + ph)
-        if tw > 0.55:
-            x, y = int(sx*w), int(sy*h)
-            if 0 <= x < w and 0 <= y < h and cv.ch[y][x] == " ":
-                cv.ch[y][x] = "*" if tw > 0.85 else "+"
-                cv.col[y][x] = 4
-                if tw > 0.93:
-                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        xx, yy = x+dx, y+dy
-                        if 0 <= xx < w and 0 <= yy < h and cv.ch[yy][xx] == " ":
-                            cv.ch[yy][xx] = "-" if dy == 0 else "|"
-                            cv.col[yy][xx] = 4
+    # starbursts on the gem (one always glows on top, plus the brightest facets)
+    top, _ = proj((0, 1.76, 0))
+    bursts.sort(reverse=True)
+    pulse = 0.6 + 0.4*math.sin(t*5)
+    allb = [(1.6*pulse, top[0], top[1] - 1, top[2] + 5)] + bursts[:2]
+    if gem_in > 0.4:
+        for b, bx, by, bz in allb:
+            ln = (3 + 6*min(0.5, max(0.0, b - 0.9))) * gem_in
+            cv.put(int(bx), int(by), bz + 5, 1.0, "*", True)
+            for i in range(1, int(ln*1.6)):
+                f = 1 - i/(ln*1.6)
+                for dx, dy, c in ((i, 0, "-"), (-i, 0, "-")):
+                    cv.put(int(bx)+dx, int(by)+dy, bz + 5, 0.9*f, c, True)
+            for i in range(1, int(ln*1.4)):
+                f = 1 - i/(ln*1.4)
+                for dy in (i, -i):
+                    cv.put(int(bx), int(by)+dy, bz + 5, 0.9*f, "|", True)
+            for i in range(1, int(ln*0.55)):
+                f = 1 - i/(ln*0.55)
+                for dx, dy, c in ((i*2, i, "\\"), (-i*2, -i, "\\"), (i*2, -i, "/"), (-i*2, i, "/")):
+                    cv.put(int(bx)+dx, int(by)+dy, bz + 5, 0.75*f, c, True)
+            cv.glints += 1
+
+    # random glints on the metal
+    if ring_p > 0.9:
+        for y in range(ROWS):
+            for x in range(COLS):
+                if cv.b[y][x] > 0.78 and cv.ch[y][x] != " " and hrand(x, y, int(t*12)) > 0.965:
+                    cv.ch[y][x] = "+"
+                    cv.b[y][x] = 1.0
+                    cv.glints += 1
+
+    # --- orbiting sparkle trails ---
+    orb = smooth(6.5, 8.5, t) * (1 - smooth(14.2, 15.0, t))
+    if orb > 0:
+        for o, (tilt, spd) in enumerate(((0.62, 1.0), (-0.62, -0.8))):
+            prec = t*0.35*(1 if o == 0 else -1)
+            for dots in range(0, 360, 6):          # faint dotted path
+                a = math.radians(dots)
+                p = (2.05*math.cos(a), 0.55*math.sin(a) + 0.35, 0.9*math.sin(a))
+                p = rot(p, prec, 0.0, tilt)
+                (sx, sy, sz), _ = proj_static(p)
+                cv.put(int(sx), int(sy), sz, 0.22*orb, ".")
+            for k in range(7):                       # comets with tails
+                for tail in range(14):
+                    a = t*1.6*spd + k*2*math.pi/7 - tail*0.055*(1 if spd > 0 else -1)
+                    p = (2.05*math.cos(a), 0.55*math.sin(a) + 0.35, 0.9*math.sin(a))
+                    p = rot(p, prec, 0.0, tilt)
+                    (sx, sy, sz), _ = proj_static(p)
+                    f = (1 - tail/14.0) * orb
+                    cv.put(int(sx), int(sy), sz, 0.25 + 0.75*f, "o.:'`,*"[min(tail//2, 6)] if tail else "*")
+                    if tail == 0:
+                        cv.glints += 1
+
+    # --- reflection on the floor ---
+    for y in range(FLOOR+1, FLOOR+9):
+        src = 2*FLOOR - y + 1
+        fade_r = 0.22 * (1 - (y - FLOOR)/9.0)
+        for x in range(COLS):
+            if cv.ch[y][x] == " " and 0 <= src < ROWS and cv.ch[src][x] != " ":
+                cv.ch[y][x] = cv.ch[src][x]
+                cv.b[y][x] = cv.b[src][x]*fade_r
+
+    # --- dust ---
+    for (x, y, ph, br) in DUST:
+        tw = 0.5 + 0.5*math.sin(t*2.2 + ph)
+        if cv.ch[y][x] == " " and tw > 0.45:
+            cv.ch[y][x] = ".'`,:"[int(br*5) % 5] if tw < 0.9 else "+"
+            cv.b[y][x] = 0.12 + 0.25*tw*br
+
+    # --- fade whole frame ---
+    if fade < 1.0:
+        for y in range(ROWS):
+            for x in range(COLS):
+                if cv.ch[y][x] != " " and hrand(x, y, 9) > fade:
+                    cv.ch[y][x] = " "
+                cv.b[y][x] *= fade
+
+    # --- HUD ---
+    letters = sum(1 for row in cv.ch for c in row if c != " ")
+    cv.text(COLS-9, 1, f"t {t:05.2f}s", 0.45)
+    cv.text(4, ROWS-5, "ARIA - ascii diamond ring", 0.33)
+    cv.text(4, ROWS-4, f"rotation {math.degrees(ay) % 360:06.2f}   glints {cv.glints:4d}", 0.33)
+    cv.text(4, ROWS-3, f"letters {letters:,}", 0.33)
     return cv
 
 
-BAND_CACHE = build_band()
-GEM_FACES = build_gem()
-_rng = random.Random(7)
-STARS = [(_rng.random(), _rng.random(), _rng.random()*6.28) for _ in range(34)]
-
-ANSI = {0: "", 1: "\x1b[38;5;178m", 2: "\x1b[38;5;123m", 3: "\x1b[1;38;5;231m", 4: "\x1b[38;5;229m"}
-RGB = {0: (255, 255, 255), 1: (230, 175, 60), 2: (130, 225, 255), 3: (255, 255, 255), 4: (255, 245, 170)}
+# ---------- output ----------
+def gray(b):
+    return int(35 + 220*max(0.0, min(1.0, b)))
 
 
-def to_text(cv, color=True):
-    lines = []
-    for y in range(cv.h):
-        if not color:
-            lines.append("".join(cv.ch[y]).rstrip())
-            continue
-        out, last = [], None
-        for x in range(cv.w):
-            c = cv.col[y][x] if cv.ch[y][x] != " " else 0
-            if c != last:
-                out.append("\x1b[0m" + ANSI[c])
-                last = c
-            out.append(cv.ch[y][x])
-        lines.append("".join(out) + "\x1b[0m")
-    return "\n".join(lines)
+def to_ansi(cv):
+    out = []
+    for y in range(ROWS):
+        line = []
+        for x in range(COLS):
+            c = cv.ch[y][x]
+            line.append(" " if c == " " else f"\x1b[38;5;{232 + min(23, int(cv.b[y][x]*23))}m{c}")
+        out.append("".join(line) + "\x1b[0m")
+    return "\n".join(out)
 
 
-def save_gif(path, w, h, frames, fps=20):
+def save_gif(path, fps=FPS, duration=DURATION):
     from PIL import Image, ImageDraw, ImageFont
     try:
-        font = ImageFont.truetype("DejaVuSansMono.ttf", 12)
+        font = ImageFont.truetype("DejaVuSansMono.ttf", 9)
     except OSError:
         font = ImageFont.load_default()
-    cw, chh = 7, 14
-    imgs = []
-    for f in range(frames):
-        cv = render(f/frames, w, h, STARS)
-        im = Image.new("RGB", (w*cw, h*chh), (6, 6, 14))
+    n = int(duration*fps)
+    frames = []
+    for f in range(n):
+        cv = render(f/fps)
+        im = Image.new("L", (COLS*CELL_W, ROWS*CELL_H), 0)
         d = ImageDraw.Draw(im)
-        for y in range(h):
-            for x in range(w):
+        for y in range(ROWS):
+            for x in range(COLS):
                 c = cv.ch[y][x]
                 if c != " ":
-                    d.text((x*cw, y*chh), c, fill=RGB[cv.col[y][x]], font=font)
-        imgs.append(im)
-    imgs[0].save(path, save_all=True, append_images=imgs[1:], duration=int(1000/fps), loop=0)
-    print(f"saved {path} ({frames} frames)")
+                    d.text((x*CELL_W, y*CELL_H), c, fill=gray(cv.b[y][x]), font=font)
+        frames.append(im)
+        if f % 40 == 0:
+            print(f"  frame {f}/{n}", flush=True)
+    frames[0].save(path, save_all=True, append_images=frames[1:], duration=int(1000/fps),
+                   loop=0, optimize=True)
+    print(f"saved {path}: {n} frames @ {fps} fps")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--width", type=int, default=72)
-    ap.add_argument("--height", type=int, default=34)
-    ap.add_argument("--frames", type=int, default=60, help="frames per rotation (GIF)")
-    ap.add_argument("--fps", type=int, default=20)
     ap.add_argument("--gif", metavar="FILE")
-    ap.add_argument("--frame", action="store_true", help="print one frame and exit")
-    ap.add_argument("--no-color", action="store_true")
+    ap.add_argument("--frame", type=float, metavar="T")
+    ap.add_argument("--fps", type=int, default=FPS)
     a = ap.parse_args()
-
     if a.gif:
-        save_gif(a.gif, a.width, a.height, a.frames, a.fps)
-        return
-    if a.frame:
-        print(to_text(render(0.12, a.width, a.height, STARS), not a.no_color))
-        return
-    sys.stdout.write("\x1b[2J\x1b[?25l")
-    try:
-        t0 = time.time()
-        while True:
-            t = ((time.time() - t0) / 4.0) % 1.0   # 4 s per rotation
-            sys.stdout.write("\x1b[H" + to_text(render(t, a.width, a.height, STARS), not a.no_color) + "\n")
-            sys.stdout.flush()
-            time.sleep(1/30)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        sys.stdout.write("\x1b[0m\x1b[?25h\n")
+        save_gif(a.gif, a.fps)
+    elif a.frame is not None:
+        print(to_ansi(render(a.frame)))
+    else:
+        sys.stdout.write("\x1b[2J\x1b[?25l")
+        try:
+            t0 = time.time()
+            while True:
+                sys.stdout.write("\x1b[H" + to_ansi(render((time.time()-t0) % DURATION)) + "\n")
+                sys.stdout.flush()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            sys.stdout.write("\x1b[0m\x1b[?25h\n")
 
 
 if __name__ == "__main__":
